@@ -1,7 +1,8 @@
-import { type FormEvent, startTransition, useEffect, useState } from 'react';
+import { lazy, Suspense, type FormEvent, startTransition, useEffect, useState } from 'react';
 import { ConfigForm } from './components/ConfigForm';
 import { ImageToPromptPage } from './components/ImageToPromptPage';
 import { ImagePreviewModal } from './components/ImagePreviewModal';
+import type { RegionEditorSubmission } from './components/ImageEditorPage';
 import { PromptReference } from './components/PromptReference';
 import { ResultPanel } from './components/ResultPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -30,6 +31,7 @@ import type {
   AppPage,
   DisplayLanguage,
   GeneratedImage,
+  EditorSource,
   GenerationHistoryItem,
   ImageFormState,
   PromptReferenceItem,
@@ -41,6 +43,7 @@ import type {
 import {
   buildSubmissionPrompt,
   createHistoryItem,
+  createDownloadFilename,
   createImageDataUrl,
   createFileFromDataUrl,
   createUploadPreviewStateFromFiles,
@@ -56,14 +59,19 @@ import {
   requestGenerateWithEditImage,
   requestGenerateWithReferenceImages,
   requestPromptPolish,
+  requestRegionEdit,
   resolveApiConfigForModel,
   resolveApiConfigForPreferredModels,
   validateForm,
   validateUploadFiles,
 } from './utils';
+import { createEditorSourceFromFile } from './editor-utils';
 
 const PROMPT_POLISH_MODELS: SupportedModel[] = ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'];
 const IMAGE_TO_PROMPT_MODELS: SupportedModel[] = ['gpt-5.4', 'gpt-5.5'];
+const ImageEditorPage = lazy(() => import('./components/ImageEditorPage').then((module) => ({
+  default: module.ImageEditorPage,
+})));
 
 function isImageGenerationModel(model: SupportedModel): boolean {
   return IMAGE_GENERATION_MODELS.includes(model);
@@ -94,6 +102,12 @@ const NAV_ITEMS: Array<{
     description: { zh: '上传一张图片，生成适合 GPT Image 的提示词', en: 'Upload one image and derive a GPT Image prompt' },
   },
   {
+    id: 'region-editor',
+    icon: '◩',
+    title: { zh: '局部编辑', en: 'Region Editor' },
+    description: { zh: '涂抹选区进行局部重绘或扩展画布', en: 'Paint a selection to edit or extend an image' },
+  },
+  {
     id: 'prompt-plaza',
     icon: '◫',
     title: { zh: '提示词参考', en: 'Prompt Reference' },
@@ -114,6 +128,7 @@ function App() {
   const [currentImage, setCurrentImage] = useState<GeneratedImage | null>(null);
   const [currentBatch, setCurrentBatch] = useState<GeneratedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null);
+  const [editorSource, setEditorSource] = useState<EditorSource | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPolishingPrompt, setIsPolishingPrompt] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -502,6 +517,75 @@ function App() {
     }
   }
 
+  async function handleOpenRegionEditor(item: GeneratedImage) {
+    try {
+      const sourceFile = await createFileFromDataUrl(
+        item.imageDataUrl,
+        item.filename || `editor-source-${item.id}.png`,
+      );
+      const nextSource = await createEditorSourceFromFile(sourceFile);
+      setEditorSource({
+        ...nextSource,
+        id: item.id,
+        prompt: item.prompt,
+      });
+      setPreviewImage(null);
+      setActivePage('region-editor');
+    } catch (caughtError) {
+      setError({
+        message: caughtError instanceof Error ? caughtError.message : '无法载入局部编辑图片。',
+      });
+    }
+  }
+
+  async function handleRegionEditorGenerate(submission: RegionEditorSubmission): Promise<GeneratedImage> {
+    const apiConfig = resolveApiConfigForModel(formState, submission.model);
+    if (!apiConfig.baseUrl || !apiConfig.apiKey) {
+      throw { message: `模型 ${submission.model} 尚未绑定可用接口。` } satisfies ApiErrorState;
+    }
+    const response = await requestRegionEdit({
+      baseUrl: apiConfig.baseUrl,
+      apiKey: apiConfig.apiKey,
+      model: submission.model,
+      prompt: submission.prompt,
+      negativePrompt: submission.negativePrompt,
+      quality: submission.quality,
+      width: submission.width,
+      height: submission.height,
+      feather: submission.feather,
+      image: submission.image,
+      mask: submission.mask,
+    });
+    const imageResult = response.data?.find((item) => typeof item.b64_json === 'string');
+    if (!imageResult?.b64_json) {
+      throw { message: '返回数据不完整，未找到局部编辑图片。' } satisfies ApiErrorState;
+    }
+    const createdAt = new Date();
+    return {
+      id: `${createdAt.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: createdAt.toISOString(),
+      prompt: submission.prompt,
+      requestedSize: `${submission.width}x${submission.height}`,
+      quality: submission.quality,
+      width: imageResult.width ?? submission.width,
+      height: imageResult.height ?? submission.height,
+      imageDataUrl: createImageDataUrl(imageResult.b64_json),
+      filename: createDownloadFilename(createdAt),
+      operation: submission.operation,
+      parentId: submission.parentId,
+      model: submission.model,
+      negativePrompt: submission.negativePrompt,
+    };
+  }
+
+  async function handleSaveEditorResult(image: GeneratedImage) {
+    const nextHistory = [image, ...history.filter((item) => item.id !== image.id)].slice(0, HISTORY_LIMIT);
+    const persistedHistory = await saveHistory(nextHistory);
+    setHistory(persistedHistory);
+    setCurrentImage(image);
+    setCurrentBatch([image]);
+  }
+
   function handleApplyPrompt(item: PromptReferenceItem) {
     setActivePage('ai-image');
     setPolishError(null);
@@ -691,6 +775,8 @@ function App() {
       apiKey: generateConfig.apiKey,
       model: generateConfig.model,
       prompt: submittedPrompt,
+      negativePrompt: formState.negativePrompt.trim(),
+      sizeMode: formState.sizeMode,
       size: resolvedSize,
       aspectRatio: formState.aspectRatio,
       imageSize: formState.imageSize,
@@ -987,15 +1073,35 @@ function App() {
                   onEditImage={(image) => {
                     void handleReuseImageForEdit(image);
                   }}
+                  onRegionEditImage={(image) => {
+                    void handleOpenRegionEditor(image);
+                  }}
                   onToggleFavorite={handleToggleFavorite}
                   onSelectHistory={handleSelectHistory}
                   onEditHistoryImage={(image) => {
                     void handleReuseImageForEdit(image);
                   }}
+                  onRegionEditHistoryImage={(image) => {
+                    void handleOpenRegionEditor(image);
+                  }}
                   onClearHistory={handleClearHistory}
                 />
               </div>
             </div>
+          ) : null}
+
+          {activePage === 'region-editor' ? (
+            <Suspense fallback={<div className="empty-state">正在加载局部编辑器...</div>}>
+              <ImageEditorPage
+                source={editorSource}
+                configuredModels={configuredModels}
+                initialModel={formState.model}
+                initialQuality={formState.quality}
+                onSourceChange={setEditorSource}
+                onGenerate={handleRegionEditorGenerate}
+                onSaveResult={handleSaveEditorResult}
+              />
+            </Suspense>
           ) : null}
 
           {activePage === 'image-to-prompt' ? (

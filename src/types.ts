@@ -54,6 +54,10 @@ export type GenerationHistoryItem = {
   height: number;
   imageDataUrl: string;
   filename: string;
+  operation?: 'generate' | 'region-edit' | 'outpaint';
+  parentId?: string;
+  model?: SupportedModel;
+  negativePrompt?: string;
 };
 
 export type ApiErrorState = {
@@ -151,6 +155,8 @@ export type GenerateRequestPayload = {
   apiKey: string;
   model: SupportedModel;
   prompt: string;
+  negativePrompt: string;
+  sizeMode: ImageFormState['sizeMode'];
   size: string;
   aspectRatio: AspectRatio;
   imageSize: ImageSizePreset;
@@ -164,6 +170,31 @@ export type GenerateResponse = {
     width?: number;
     height?: number;
   }>;
+};
+
+export type EditorSource = {
+  id?: string;
+  imageDataUrl: string;
+  filename: string;
+  prompt: string;
+  width: number;
+  height: number;
+  originalWidth: number;
+  originalHeight: number;
+};
+
+export type RegionEditRequestPayload = {
+  baseUrl: string;
+  apiKey: string;
+  model: SupportedModel;
+  prompt: string;
+  negativePrompt: string;
+  quality: ImageFormState['quality'];
+  width: number;
+  height: number;
+  feather: number;
+  image: Blob;
+  mask: Blob;
 };
 
 export type PromptPolishRequestPayload = {
@@ -203,7 +234,7 @@ export type UploadState = {
   error: string | null;
 };
 
-export type AppPage = 'ai-image' | 'image-to-prompt' | 'prompt-plaza' | 'settings';
+export type AppPage = 'ai-image' | 'region-editor' | 'image-to-prompt' | 'prompt-plaza' | 'settings';
 
 export type DisplayLanguage = 'zh' | 'en';
 

@@ -14,9 +14,11 @@ type ResultPanelProps = {
   onRegenerate: () => void;
   onCopy: () => void;
   onEditImage: (image: GeneratedImage) => void;
+  onRegionEditImage: (image: GeneratedImage) => void;
   onToggleFavorite: () => void;
   onSelectHistory: (item: GenerationHistoryItem) => void;
   onEditHistoryImage: (item: GenerationHistoryItem) => void;
+  onRegionEditHistoryImage: (item: GenerationHistoryItem) => void;
   onClearHistory: () => void;
 };
 
@@ -32,9 +34,11 @@ export function ResultPanel({
   onRegenerate,
   onCopy,
   onEditImage,
+  onRegionEditImage,
   onToggleFavorite,
   onSelectHistory,
   onEditHistoryImage,
+  onRegionEditHistoryImage,
   onClearHistory,
 }: ResultPanelProps) {
   return (
@@ -74,6 +78,9 @@ export function ResultPanel({
             </a>
             <button className="action-button" type="button" onClick={() => onEditImage(image)}>
               继续编辑
+            </button>
+            <button className="action-button" type="button" onClick={() => onRegionEditImage(image)}>
+              局部编辑
             </button>
             <button className="action-button" type="button" onClick={onCopy}>
               复制链接
@@ -129,6 +136,7 @@ export function ResultPanel({
         favoriteIds={favoriteIds}
         onSelect={onSelectHistory}
         onEditImage={onEditHistoryImage}
+        onRegionEditImage={onRegionEditHistoryImage}
         onClear={onClearHistory}
       />
     </section>

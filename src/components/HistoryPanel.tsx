@@ -5,10 +5,11 @@ type HistoryPanelProps = {
   favoriteIds: string[];
   onSelect: (item: GenerationHistoryItem) => void;
   onEditImage: (item: GenerationHistoryItem) => void;
+  onRegionEditImage: (item: GenerationHistoryItem) => void;
   onClear: () => void;
 };
 
-export function HistoryPanel({ history, favoriteIds, onSelect, onEditImage, onClear }: HistoryPanelProps) {
+export function HistoryPanel({ history, favoriteIds, onSelect, onEditImage, onRegionEditImage, onClear }: HistoryPanelProps) {
   return (
     <section className="history-panel embedded-history-panel">
       <div className="history-head">
@@ -49,6 +50,9 @@ export function HistoryPanel({ history, favoriteIds, onSelect, onEditImage, onCl
               <div className="history-card-actions">
                 <button className="ghost-button history-action-button" type="button" onClick={() => onEditImage(item)}>
                   继续编辑
+                </button>
+                <button className="ghost-button history-action-button" type="button" onClick={() => onRegionEditImage(item)}>
+                  局部编辑
                 </button>
               </div>
             </article>

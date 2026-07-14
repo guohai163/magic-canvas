@@ -2,6 +2,18 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildGenerationPrompt,
+  resizeGeneratedImages,
+  resolveGeminiOutputConfig,
+} from './image-generation.js';
+import {
+  buildGeminiRegionEditPrompt,
+  compositeRegionEdit,
+  createGeminiVisibleMask,
+  createGptImageMask,
+  validateRegionEditInputs,
+} from './region-edit.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -49,13 +61,24 @@ const upload = multer({
 app.use(express.json({ limit: '2mb' }));
 
 app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), async (req, res) => {
-  const { baseUrl, apiKey, model, prompt, size, aspectRatio, imageSize, quality } = req.body ?? {};
+  const {
+    baseUrl,
+    apiKey,
+    model,
+    prompt,
+    negativePrompt = '',
+    sizeMode = 'preset',
+    size,
+    aspectRatio,
+    imageSize,
+    quality,
+  } = req.body ?? {};
   const mode = req.body?.mode ?? 'text';
   const uploadedImages = req.files ?? [];
 
   const validationError =
     validateBaseFields(baseUrl, apiKey) ||
-    validateGenerateFields(model, prompt, size, aspectRatio, imageSize, quality, mode, uploadedImages);
+    validateGenerateFields(model, prompt, negativePrompt, sizeMode, size, aspectRatio, imageSize, quality, mode, uploadedImages);
 
   if (validationError) {
     res.status(400).json({
@@ -65,6 +88,14 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
     });
     return;
   }
+
+  const generationPrompt = buildGenerationPrompt(prompt, negativePrompt);
+  const geminiOutputConfig = resolveGeminiOutputConfig({
+    sizeMode,
+    size,
+    aspectRatio,
+    imageSize,
+  });
 
   const upstreamPath = model === 'gemini-3.1-flash-image'
     ? getGeminiPrimaryPath(baseUrl, model)
@@ -87,9 +118,9 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
         upstreamUrl,
         apiKey,
         model,
-        prompt,
-        aspectRatio,
-        imageSize,
+        prompt: generationPrompt,
+        aspectRatio: geminiOutputConfig.aspectRatio,
+        imageSize: geminiOutputConfig.imageSize,
         uploadedImages,
         requestFormat: isGoogleGeminiBaseUrl(baseUrl) ? 'interactions' : 'generateContent',
       });
@@ -112,18 +143,18 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
           upstreamUrl: fallbackUrl,
           apiKey,
           model,
-          prompt,
-          aspectRatio,
-          imageSize,
+          prompt: generationPrompt,
+          aspectRatio: geminiOutputConfig.aspectRatio,
+          imageSize: geminiOutputConfig.imageSize,
           uploadedImages,
           requestFormat: 'generateContent',
         });
 
-        await proxyGeminiImageResponse(fallbackResponse, res);
+        await proxyGeminiImageResponse(fallbackResponse, res, geminiOutputConfig.targetSize);
         return;
       }
 
-      await proxyGeminiImageResponse(upstreamResponse, res);
+      await proxyGeminiImageResponse(upstreamResponse, res, geminiOutputConfig.targetSize);
       return;
     }
 
@@ -132,7 +163,7 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
           upstreamUrl,
           apiKey,
           model,
-          prompt,
+          prompt: generationPrompt,
           size,
           quality,
         })
@@ -140,7 +171,7 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
           upstreamUrl,
           apiKey,
           model,
-          prompt,
+          prompt: generationPrompt,
           size,
           quality,
           uploadedImages,
@@ -151,6 +182,126 @@ app.post('/api/generate', upload.array('image', MAX_REFERENCE_IMAGE_COUNT), asyn
     res.status(502).json({
       error: {
         message: '代理请求上游图片接口失败。',
+        details: error instanceof Error ? error.message : undefined,
+      },
+    });
+  }
+});
+
+app.post('/api/edit-region', upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'mask', maxCount: 1 },
+]), async (req, res) => {
+  const { baseUrl, apiKey, model, prompt, negativePrompt = '', quality } = req.body ?? {};
+  const width = Number(req.body?.width);
+  const height = Number(req.body?.height);
+  const files = req.files ?? {};
+  const sourceImage = Array.isArray(files.image) ? files.image[0] : undefined;
+  const selectionMask = Array.isArray(files.mask) ? files.mask[0] : undefined;
+  const validationError =
+    validateBaseFields(baseUrl, apiKey) ||
+    validateImageGenerationModelField(model) ||
+    (typeof prompt !== 'string' || !prompt.trim() ? '请描述选区需要如何修改。' : null) ||
+    (typeof negativePrompt !== 'string' ? '负面提示词格式无效。' : null) ||
+    (!['low', 'medium', 'high', 'auto'].includes(quality) ? '图片品质无效。' : null) ||
+    validateImageSize(`${width}x${height}`) ||
+    await validateRegionEditInputs(sourceImage?.buffer, selectionMask?.buffer, width, height);
+
+  if (validationError) {
+    res.status(400).json({ error: { message: validationError } });
+    return;
+  }
+
+  const generationPrompt = buildGenerationPrompt(prompt, negativePrompt);
+  const geminiOutputConfig = resolveGeminiOutputConfig({
+    sizeMode: 'custom',
+    size: `${width}x${height}`,
+    aspectRatio: '1:1',
+    imageSize: '1K',
+  });
+
+  try {
+    let upstreamResponse;
+    if (model === 'gemini-3.1-flash-image') {
+      const visibleMask = await createGeminiVisibleMask(selectionMask.buffer);
+      const geminiImages = [
+        sourceImage,
+        {
+          ...selectionMask,
+          buffer: visibleMask,
+          mimetype: 'image/png',
+          originalname: 'selection-map.png',
+        },
+      ];
+      const requestFormat = isGoogleGeminiBaseUrl(baseUrl) ? 'interactions' : 'generateContent';
+      const upstreamUrl = buildUpstreamUrl(baseUrl, getGeminiPrimaryPath(baseUrl, model));
+      upstreamResponse = await fetchGeminiImage({
+        upstreamUrl,
+        apiKey,
+        model,
+        prompt: buildGeminiRegionEditPrompt(generationPrompt),
+        aspectRatio: geminiOutputConfig.aspectRatio,
+        imageSize: geminiOutputConfig.imageSize,
+        uploadedImages: geminiImages,
+        requestFormat,
+      });
+      if (shouldFallbackGeminiNativeRequest(upstreamResponse, baseUrl)) {
+        const fallbackUrl = buildUpstreamUrl(baseUrl, getGeminiGenerateContentPath(model));
+        upstreamResponse = await fetchGeminiImage({
+          upstreamUrl: fallbackUrl,
+          apiKey,
+          model,
+          prompt: buildGeminiRegionEditPrompt(generationPrompt),
+          aspectRatio: geminiOutputConfig.aspectRatio,
+          imageSize: geminiOutputConfig.imageSize,
+          uploadedImages: geminiImages,
+          requestFormat: 'generateContent',
+        });
+      }
+    } else {
+      const upstreamUrl = buildUpstreamUrl(baseUrl, EDIT_PATH);
+      const gptMask = await createGptImageMask(selectionMask.buffer);
+      upstreamResponse = await fetchWithMaskedImageEdit({
+        upstreamUrl,
+        apiKey,
+        model,
+        prompt: generationPrompt,
+        size: `${width}x${height}`,
+        quality,
+        sourceImage,
+        maskBuffer: gptMask,
+      });
+    }
+
+    const contentType = upstreamResponse.headers.get('content-type') ?? '';
+    const payload = contentType.includes('application/json')
+      ? await upstreamResponse.json()
+      : { error: { message: await upstreamResponse.text() } };
+    if (!upstreamResponse.ok) {
+      res.status(upstreamResponse.status).json(payload);
+      return;
+    }
+
+    const generatedImages = model === 'gemini-3.1-flash-image'
+      ? extractGeminiImageBase64(payload)
+      : Array.isArray(payload.data)
+        ? payload.data.map((item) => item?.b64_json).filter((value) => typeof value === 'string')
+        : [];
+    if (generatedImages.length === 0) {
+      res.status(502).json({ error: { message: '局部编辑接口返回成功，但未解析到图片内容。' } });
+      return;
+    }
+
+    const compositedImages = await Promise.all(generatedImages.map(async (image) => (
+      await compositeRegionEdit(sourceImage.buffer, image, selectionMask.buffer, width, height)
+    ).toString('base64')));
+    res.json({
+      data: compositedImages.map((b64Json) => ({ b64_json: b64Json, width, height })),
+    });
+  } catch (error) {
+    res.status(502).json({
+      error: {
+        message: '代理请求上游局部编辑接口失败。',
         details: error instanceof Error ? error.message : undefined,
       },
     });
@@ -454,7 +605,7 @@ function validateBaseFields(baseUrl, apiKey) {
   return null;
 }
 
-function validateGenerateFields(model, prompt, size, aspectRatio, imageSize, quality, mode, uploadedImages) {
+function validateGenerateFields(model, prompt, negativePrompt, sizeMode, size, aspectRatio, imageSize, quality, mode, uploadedImages) {
   const modelValidationError = validateImageGenerationModelField(model);
   if (modelValidationError) {
     return modelValidationError;
@@ -462,6 +613,14 @@ function validateGenerateFields(model, prompt, size, aspectRatio, imageSize, qua
 
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return '请填写提示词后再生成图片。';
+  }
+
+  if (typeof negativePrompt !== 'string') {
+    return '负面提示词格式无效。';
+  }
+
+  if (!['preset', 'custom'].includes(sizeMode)) {
+    return '图片尺寸模式无效。';
   }
 
   const acceptedQualities = new Set(['low', 'medium', 'high', 'auto']);
@@ -483,11 +642,9 @@ function validateGenerateFields(model, prompt, size, aspectRatio, imageSize, qua
     return '图片尺寸无效，请填写合法的 WIDTHxHEIGHT。';
   }
 
-  if (model !== 'gemini-3.1-flash-image') {
-    const sizeValidationError = validateGptImage2Size(size);
-    if (sizeValidationError) {
-      return sizeValidationError;
-    }
+  const sizeValidationError = validateImageSize(size);
+  if (sizeValidationError) {
+    return sizeValidationError;
   }
 
   const acceptedModes = new Set(['text', 'reference', 'edit']);
@@ -569,7 +726,7 @@ function validateImageToPromptFields(uploadedImage) {
   return null;
 }
 
-function validateGptImage2Size(size) {
+function validateImageSize(size) {
   const match = size.trim().match(/^(\d+)x(\d+)$/i);
   if (!match) {
     return '图片尺寸格式无效，请使用 WIDTHxHEIGHT，例如 1920x1024。';
@@ -663,6 +820,31 @@ async function fetchWithImageEdit({
     headers: {
       Authorization: `Bearer ${apiKey.trim()}`,
     },
+    body: formData,
+  });
+}
+
+async function fetchWithMaskedImageEdit({
+  upstreamUrl,
+  apiKey,
+  model,
+  prompt,
+  size,
+  quality,
+  sourceImage,
+  maskBuffer,
+}) {
+  const formData = new FormData();
+  formData.append('model', model);
+  formData.append('prompt', prompt.trim());
+  formData.append('size', size);
+  formData.append('quality', quality);
+  formData.append('n', '1');
+  formData.append('image[]', new Blob([sourceImage.buffer], { type: 'image/png' }), 'editor-source.png');
+  formData.append('mask', new Blob([maskBuffer], { type: 'image/png' }), 'editor-mask.png');
+  return fetch(upstreamUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey.trim()}` },
     body: formData,
   });
 }
@@ -785,7 +967,7 @@ async function proxyResponse(upstreamResponse, res) {
   res.send(await upstreamResponse.text());
 }
 
-async function proxyGeminiImageResponse(upstreamResponse, res) {
+async function proxyGeminiImageResponse(upstreamResponse, res, targetSize = null) {
   const contentType = upstreamResponse.headers.get('content-type') ?? '';
   const isJson = contentType.includes('application/json');
 
@@ -808,7 +990,7 @@ async function proxyGeminiImageResponse(upstreamResponse, res) {
     return;
   }
 
-  const images = extractGeminiImageBase64(payload);
+  const images = await resizeGeneratedImages(extractGeminiImageBase64(payload), targetSize);
   if (images.length === 0) {
     res.status(502).json({
       error: {

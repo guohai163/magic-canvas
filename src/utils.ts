@@ -13,6 +13,7 @@ import type {
   PromptPolishResponse,
   PromptReferenceItem,
   PromptReferenceResponse,
+  RegionEditRequestPayload,
   SupportedModel,
   UploadState,
   UsageRequestPayload,
@@ -29,18 +30,13 @@ import {
 
 const MAX_REFERENCE_IMAGE_COUNT = 4;
 
-export function buildSubmissionPrompt(formState: Pick<ImageFormState, 'prompt' | 'negativePrompt' | 'stylePreset'>): string {
+export function buildSubmissionPrompt(formState: Pick<ImageFormState, 'prompt' | 'stylePreset'>): string {
   const prompt = formState.prompt.trim();
-  const negativePrompt = formState.negativePrompt.trim();
   const styleTemplate = STYLE_PRESETS.find((preset) => preset.id === formState.stylePreset)?.promptTemplate ?? '';
   const sections = [prompt];
 
   if (styleTemplate) {
     sections.push(`风格要求：${styleTemplate}`);
-  }
-
-  if (negativePrompt) {
-    sections.push(`请避免出现以下内容：${negativePrompt}`);
   }
 
   return sections.join('\n\n');
@@ -406,6 +402,8 @@ export async function requestGenerateWithReferenceImages(
   formData.append('apiKey', payload.apiKey);
   formData.append('model', payload.model);
   formData.append('prompt', payload.prompt);
+  formData.append('negativePrompt', payload.negativePrompt);
+  formData.append('sizeMode', payload.sizeMode);
   formData.append('size', payload.size);
   formData.append('aspectRatio', payload.aspectRatio);
   formData.append('imageSize', payload.imageSize);
@@ -437,6 +435,8 @@ export async function requestGenerateWithEditImage(
   formData.append('apiKey', payload.apiKey);
   formData.append('model', payload.model);
   formData.append('prompt', payload.prompt);
+  formData.append('negativePrompt', payload.negativePrompt);
+  formData.append('sizeMode', payload.sizeMode);
   formData.append('size', payload.size);
   formData.append('aspectRatio', payload.aspectRatio);
   formData.append('imageSize', payload.imageSize);
@@ -453,6 +453,30 @@ export async function requestGenerateWithEditImage(
     throw await parseError(response);
   }
 
+  return (await response.json()) as GenerateResponse;
+}
+
+export async function requestRegionEdit(payload: RegionEditRequestPayload): Promise<GenerateResponse> {
+  const formData = new FormData();
+  formData.append('baseUrl', payload.baseUrl);
+  formData.append('apiKey', payload.apiKey);
+  formData.append('model', payload.model);
+  formData.append('prompt', payload.prompt);
+  formData.append('negativePrompt', payload.negativePrompt);
+  formData.append('quality', payload.quality);
+  formData.append('width', String(payload.width));
+  formData.append('height', String(payload.height));
+  formData.append('feather', String(payload.feather));
+  formData.append('image', payload.image, 'editor-source.png');
+  formData.append('mask', payload.mask, 'editor-mask.png');
+
+  const response = await fetch('/api/edit-region', {
+    method: 'POST',
+    body: formData,
+  });
+  if (!response.ok) {
+    throw await parseError(response);
+  }
   return (await response.json()) as GenerateResponse;
 }
 
