@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1 - 2026-09-16
+
+### Changed
+- 支持模型更新为 `gemini-3.1-flash-image`、`gpt-image-2`、`gpt-5.6-luna`、`gpt-5.6-terra`、`gpt-image-2.5-sunburst` 和 `gpt-image-2.5-flare`，移除 `gpt-5.5`、`gpt-5.4` 和 `gpt-5.4-mini`。
+- 提示词 AI 辅助与图转提示词优先使用 `gpt-5.6-terra`，未配置时回退到 `gpt-5.6-luna`。
+
 ## v1.3.0 - 2026-07-15
 
 ### Added

@@ -67,8 +67,8 @@ import {
 } from './utils';
 import { createEditorSourceFromFile } from './editor-utils';
 
-const PROMPT_POLISH_MODELS: SupportedModel[] = ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'];
-const IMAGE_TO_PROMPT_MODELS: SupportedModel[] = ['gpt-5.4', 'gpt-5.5'];
+const PROMPT_POLISH_MODELS: SupportedModel[] = ['gpt-5.6-terra', 'gpt-5.6-luna'];
+const IMAGE_TO_PROMPT_MODELS: SupportedModel[] = ['gpt-5.6-terra', 'gpt-5.6-luna'];
 const ImageEditorPage = lazy(() => import('./components/ImageEditorPage').then((module) => ({
   default: module.ImageEditorPage,
 })));

@@ -43,13 +43,16 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', '
 const SUPPORTED_MODELS = new Set([
   'gemini-3.1-flash-image',
   'gpt-image-2',
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
+  'gpt-5.6-luna',
+  'gpt-5.6-terra',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
 ]);
 const IMAGE_GENERATION_MODELS = new Set([
   'gemini-3.1-flash-image',
   'gpt-image-2',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
 ]);
 const upload = multer({
   storage: multer.memoryStorage(),

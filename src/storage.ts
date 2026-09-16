@@ -98,7 +98,7 @@ function createStoredProviderId(index: number): string {
 function getLegacySupportedModels(storedModel: SupportedModel): SupportedModel[] {
   const imageModel = isImageGenerationModel(storedModel) ? storedModel : DEFAULT_FORM_STATE.model;
   return SUPPORTED_MODELS.filter((model) =>
-    model === imageModel || model === 'gpt-5.5' || model === 'gpt-5.4' || model === 'gpt-5.4-mini',
+    model === imageModel || model === 'gpt-5.6-luna' || model === 'gpt-5.6-terra',
   );
 }
 
